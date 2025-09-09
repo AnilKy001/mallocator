@@ -63,7 +63,8 @@ class torch_mallocator:
             try:
                 self.torch_vanilla_malloc(size, device, stream)
                 self.stats['total_allocated_bytes'] += size
-            except RuntimeError as e:
+
+            except torch.cuda.OutOfMemoryError as e: # e is the OOM error.
                 print(f"OOM encountered during allocation of {size} bytes on {device}: {e}")
                 self.stats['num_oom_events'] += 1
                 retry_count += 1
@@ -73,15 +74,32 @@ class torch_mallocator:
                 if retry_count >= self.max_retries:
                     print(f"Max retries reached ({self.max_retries}). Allocation failed.")
                     self.stats['num_failed_allocations'] += 1
-                    raise e
+                    raise RuntimeError(f"Allocation of {size} bytes on {device} failed after {self.max_retries} retries.")
                 else:
                     time.sleep(self.delay)
                     torch.cuda.memory.empty_cache()
+                    
+            except Exception as e:
+                print(f"Non-OOM error encountered during allocation: {e}")
+                self.stats['num_failed_allocations'] += 1
+                raise e
         
         self.set_thread_local_retry_count(0)
         self.stats['num_successful_retries'] += retry_count
         print(f"Allocation of {size} bytes on {device} succeeded after {retry_count} retries.")
         return
+    
+    def install_mallocator(self):
+        '''
+        Install the custom memory allocator as the PyTorch's custom CUDA allocator.
+        All references to the original allocator are intercepted and redirected to
+        the custom allocator.
+        '''
+        if self.mallocator_installed:
+            print("Mallocator is already installed.")
+            return
+        
+        self.torch_vanilla_malloc = 
     
 
                     
