@@ -1,17 +1,16 @@
-import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:False'
+#!/usr/bin/env python3
+"""
+Pre-compile the graceful mallocator extension.
+Run this ONCE to compile the extension, then use it without recompilation.
+"""
+
 import torch
 import torch.utils.cpp_extension
-from torch.cuda.memory import CUDAPluggableAllocator
+import os
+import hashlib
 
-def install_mallocator(
-        max_retries: int = 5,
-        wait_time: float = 5.0,
-        signal_on_oom: bool = False
-):
-    # Import torch only when the function is called, not at module level
-    if hasattr(torch.cuda, '_initialized') and torch.cuda._initialized:
-        print("aaa--WARNING: CUDA context already initialized. Custom allocator may not work for existing allocations.")
+def compile_graceful_mallocator(max_retries=5, wait_time=5.0):
+    """Compile the graceful mallocator extension ahead of time."""
     
     mallocator_source = """
 #include <sys/types.h>
@@ -107,21 +106,47 @@ void graceful_free (void* ptr, size_t size, int device, cudaStream_t stream) {{
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {{}}
 """.format(max_retries=max_retries, wait_time=wait_time)
 
-    if hasattr(torch.cuda, '_initialized') and torch.cuda._initialized:
-        print("ccc--WARNING: CUDA context already initialized. Custom allocator may not work for existing allocations.")
+    print("Compiling graceful mallocator extension...")
+    print("(This will initialize CUDA, but that's OK since we're pre-compiling)")
     
+    build_dir = os.path.abspath("./build")
+    os.makedirs(build_dir, exist_ok=True)
+    
+    extension_name = f"graceful_mallocator"
+    
+    try:
+        extension_path = torch.utils.cpp_extension.load_inline(
+            name=extension_name,
+            cpp_sources=mallocator_source,
+            with_cuda=True,
+            verbose=True,
+            is_python_module=False,
+            build_directory=build_dir
+        )
+        
+        print(f"✅ Extension compiled successfully!")
+        print(f"   Location: {extension_path}")
+        print()
+        print("Now you can use the allocator without recompilation:")
+        print("   from graceful_mallocator import install_mallocator")
+        print("   install_mallocator()")
+        
+        return extension_path
+        
+    except Exception as e:
+        print(f"❌ Compilation failed: {e}")
+        raise
 
-    graceful_mallocator = torch.cuda.memory.CUDAPluggableAllocator(
-        "./build/graceful_mallocator.so",
-        "graceful_malloc",
-        "graceful_free"
-    )
-    if hasattr(torch.cuda, '_initialized') and torch.cuda._initialized:
-        print("WARNING: CUDA context already initialized. Custom allocator may not work for existing allocations.")
-
-    torch.cuda.memory.change_current_allocator(graceful_mallocator)
-
-    print("Installed graceful memory allocator with the following parameters:")
-    print(f"  Maximum number of retries: {max_retries}")
-    print(f"  Wait time between retries: {wait_time} seconds")
-    print(f"  Signal on OOM: {'Enabled' if signal_on_oom else 'Disabled'}")
+if __name__ == "__main__":
+    print("Graceful Mallocator Pre-Compiler")
+    print("=" * 40)
+    print("This script compiles the CUDA extension ahead of time.")
+    print("Run this once, then use the compiled extension without")
+    print("triggering CUDA initialization during import.")
+    print()
+    
+    try:
+        compile_graceful_mallocator()
+    except Exception as e:
+        print(f"Failed to compile: {e}")
+        exit(1)
