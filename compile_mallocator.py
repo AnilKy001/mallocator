@@ -8,8 +8,9 @@ import torch
 import torch.utils.cpp_extension
 import os
 import hashlib
+import argparse
 
-def compile_graceful_mallocator(max_retries=5, wait_time=5.0):
+def compile_graceful_mallocator(wait_time):
     """Compile the graceful mallocator extension ahead of time."""
     
     mallocator_source = """
@@ -44,51 +45,44 @@ void signal_oom_external (size_t size, int device) {{
 }}
 
 void* graceful_malloc (size_t size, int device, cudaStream_t stream) {{
-    for (int attempt = 1; attempt <= {max_retries}; attempt++) {{
-        void* ptr = nullptr;
-        cudaError_t err = cudaMalloc(&ptr, size);
+    void* ptr = nullptr;
+    cudaError_t err = cudaMalloc(&ptr, size);
 
+    if (err == cudaSuccess) {{
+        return ptr;
+    }}
+    else if (err == cudaErrorMemoryAllocation) {{
+        std::cerr << "Out-of-memory error has occurred during the allocation of " << size << " bytes on device " << device << "." << std::endl;
+        signal_oom_external(size, device);
+        
+        std::cout << "Retrying after waiting {wait_time} seconds..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(int({wait_time} * 1000)));
+
+        // Synchronize to ensure all operations are complete
+        cudaDeviceSynchronize();
+
+        // Wait until sufficient memory is available, then try allocation again:
+        std::cout << "Checking for available memory..." << std::endl;
+        bool memory_available = false;
+        while (!memory_available) {{
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            memory_available = check_memory_available(size, device);
+        }}
+        std::cout << "Sufficient memory available. Retrying allocation." << std::endl;
+        err = cudaMalloc(&ptr, size);
         if (err == cudaSuccess) {{
+            std::cout << "Allocation succeeded after retry." << std::endl;
+            cudaGetLastError();
             return ptr;
-        }}
-        else if (err == cudaErrorMemoryAllocation) {{
-            std::cerr << "Out-of-memory error has occurred during the allocation of " << size << " bytes on device " << device << ". Attempt " << attempt << " of {max_retries}." << std::endl;
-            if (attempt == 1) {{
-                signal_oom_external(size, device);
-            }}
-            if (attempt < {max_retries}) {{
-                std::cout << "Retrying after waiting {wait_time} seconds..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(int({wait_time} * 1000)));
-
-                // Synchronize to ensure all operations are complete
-                cudaDeviceSynchronize();
-
-                // Wait until sufficient memory is available, then try allocation again:
-                std::cout << "Checking for available memory..." << std::endl;
-                bool memory_available = false;
-                for (int check_count = 0; check_count < 5; check_count++) {{
-                    if (check_memory_available(size, device)) {{
-                        memory_available = true;
-                        std::cout << "Sufficient memory available. Retrying allocation." << std::endl;
-                        break;
-                    }}
-                    else {{
-                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    }}
-                }}
-                if (memory_available == false) {{
-                    std::cout << "Memory allocation failed for attempt " << attempt << "." << std::endl;
-                }}
-            }}
-            else {{
-                std::cerr << "Max retries reached ({max_retries}). Allocation failed." << std::endl;
-                return nullptr;
-            }}
-        }}
+        }} 
         else {{
-            std::cerr << "Non-OOM error during allocation: " << cudaGetErrorString(err) << std::endl;
+            std::cerr << "Allocation failed again after retry: " << cudaGetErrorString(err) << std::endl;
             return nullptr;
         }}
+    }}
+    else {{
+        std::cerr << "Non-OOM error during allocation: " << cudaGetErrorString(err) << std::endl;
+        return nullptr;
     }}
     return nullptr;
 }}
@@ -104,10 +98,9 @@ void graceful_free (void* ptr, size_t size, int device, cudaStream_t stream) {{
 
 #include <torch/extension.h>
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {{}}
-""".format(max_retries=max_retries, wait_time=wait_time)
+""".format(wait_time=wait_time)
 
-    print("Compiling graceful mallocator extension...")
-    print("(This will initialize CUDA, but that's OK since we're pre-compiling)")
+    print("Compiling graceful mallocator extension.")
     
     build_dir = os.path.abspath("./build")
     os.makedirs(build_dir, exist_ok=True)
@@ -124,7 +117,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {{}}
             build_directory=build_dir
         )
         
-        print(f"✅ Extension compiled successfully!")
+        print(f"Graceful mallocator compiled successfully!")
         print(f"   Location: {extension_path}")
         print()
         print("Now you can use the allocator without recompilation:")
@@ -134,19 +127,25 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {{}}
         return extension_path
         
     except Exception as e:
-        print(f"❌ Compilation failed: {e}")
+        print(f"Compilation failed: {e}")
         raise
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Compile the graceful mallocator extension")
+    parser.add_argument("--wait-time", type=float, default=5.0, 
+                       help="Wait time in seconds before retry attempt (default: 5.0)")
+    args = parser.parse_args()
+    
     print("Graceful Mallocator Pre-Compiler")
     print("=" * 40)
     print("This script compiles the CUDA extension ahead of time.")
     print("Run this once, then use the compiled extension without")
     print("triggering CUDA initialization during import.")
+    print(f"Wait time: {args.wait_time} seconds")
     print()
     
     try:
-        compile_graceful_mallocator()
+        compile_graceful_mallocator(wait_time=args.wait_time)
     except Exception as e:
         print(f"Failed to compile: {e}")
         exit(1)

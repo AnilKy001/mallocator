@@ -6,10 +6,10 @@ def test_graceful_allocator_installation():
     if torch.cuda.is_available():
         current_allocator = torch.cuda.memory._get_current_allocator()
         assert current_allocator is not None
-        print("✅ Allocator installation test passed")
+        print("Allocator installation test passed.")
         return True
     else:
-        print("⚠️ CUDA not available, skipping test")
+        print("CUDA is not available, skipping test.")
         return True
 
 def test_basic_allocation():
@@ -17,7 +17,7 @@ def test_basic_allocation():
     import torch  # Import here to ensure allocator is installed first
     
     if not torch.cuda.is_available():
-        print("⚠️ CUDA not available, skipping test")
+        print("CUDA is not available, skipping test.")
         return True
     
     try:
@@ -29,50 +29,57 @@ def test_basic_allocation():
         # Free the tensor
         del x
         torch.cuda.empty_cache()
-        print("✅ Basic allocation test passed")
+        print("Basic allocation test passed.")
         return True
     except Exception as e:
-        print(f"❌ Basic allocation test failed: {e}")
+        print(f"Basic allocation test failed: {e}")
         return False
 
 def test_large_allocation():
     """Test allocation of a larger tensor to potentially trigger retry logic."""
     import torch  # Import here to ensure allocator is installed first
+    import torch.nn as nn
+    import time
+    import threading
     
     if not torch.cuda.is_available():
-        print("⚠️ CUDA not available, skipping test")
+        print("CUDA is not available, skipping test.")
         return True
-    
-    try:
-        # Try to allocate a large tensor (adjust size based on available GPU memory)
-        x1 = torch.randn(30000, 30000).cuda()
-        assert x1.is_cuda
-        x2 = torch.randn(30000, 30000).cuda()
-        assert x2.is_cuda
-        x7 = x2 ** 2
-        x7 = x7 + x2
-        x3 = torch.randn(50000, 50000).cuda()
-        assert x3.is_cuda
-        x4 = torch.randn(30000, 30000).cuda()
-        assert x4.is_cuda
 
-        x5 = x2 ** 2
-        x6 = x3 ** 2
-        x7 = x5 + x6
-        del x1, x2, x3, x4
+    def worker_thread(thread_id, device, tensor_size):
+        print(f"Thread {thread_id}: Allocating {tensor_size}x{tensor_size} tensor.")
+        tensor = torch.randn(tensor_size, tensor_size, device=device)
+        time.sleep(5)
+        del tensor
         torch.cuda.empty_cache()
-        print("✅ Large allocation test passed")
+
+     
+
+    try:
+
+        thread_1 = threading.Thread(target=worker_thread, args=(1, 'cuda:0', 70000))
+        thread_2 = threading.Thread(target=worker_thread, args=(2, 'cuda:0', 70000))
+
+        thread_1.start()
+        time.sleep(1)  # Stagger the start
+        thread_2.start()
+
+        thread_1.join()
+        thread_2.join()
+
+
+        print("Large allocation test passed.")
         return True
     except RuntimeError as e:
         # If OOM occurs, the graceful allocator should handle it with retries
         if "out of memory" in str(e).lower() or "allocation failed" in str(e).lower():
-            print("✅ Large allocation test passed (OOM handled gracefully)")
+            print("Large allocation test passed (OOM handled gracefully)")
             return True
         else:
-            print(f"❌ Large allocation test failed with unexpected error: {e}")
+            print(f"Large allocation test failed with unexpected error: {e}")
             return False
     except Exception as e:
-        print(f"❌ Large allocation test failed: {e}")
+        print(f"Large allocation test failed: {e}")
         return False
 
 def main():
@@ -84,25 +91,24 @@ def main():
     try:
         print("\n1. Installing allocator...")
         from graceful_mallocator import install_mallocator
-        install_mallocator(max_retries=3, wait_time=1.0, signal_on_oom=False)
-        print("✅ Allocator installed successfully")
+        install_mallocator()
+        print("Allocator installed successfully")
     except Exception as e:
-        print(f"❌ Failed to install allocator: {e}")
-        print("💡 Try restarting Python interpreter")
+        print(f"Failed to install allocator: {e}")
         return False
     
     # Import torch after allocator installation
     print("\n2. Importing PyTorch...")
     try:
         import torch
-        print(f"✅ PyTorch imported successfully (version: {torch.__version__})")
+        print(f"PyTorch imported successfully (version: {torch.__version__})")
         
         if torch.cuda.is_available():
-            print(f"✅ CUDA available (device: {torch.cuda.get_device_name()})")
+            print(f"CUDA available (device: {torch.cuda.get_device_name()})")
         else:
-            print("⚠️ CUDA not available")
+            print("CUDA is not available")
     except Exception as e:
-        print(f"❌ Failed to import PyTorch: {e}")
+        print(f"Failed to import PyTorch: {e}")
         return False
     
     # Run tests
@@ -123,19 +129,19 @@ def main():
             if test_func():
                 passed += 1
             else:
-                print(f"❌ {test_name} failed")
+                print(f"{test_name} failed")
         except Exception as e:
-            print(f"❌ {test_name} failed with exception: {e}")
+            print(f"{test_name} failed with exception: {e}")
     
     # Summary
     print(f"\n=== Test Summary ===")
     print(f"Passed: {passed}/{total}")
     
     if passed == total:
-        print("🎉 All tests passed!")
+        print("All tests passed!")
         return True
     else:
-        print("❌ Some tests failed")
+        print("Some tests failed")
         return False
 
 if __name__ == "__main__":
